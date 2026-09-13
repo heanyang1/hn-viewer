@@ -44,6 +44,18 @@ non-loopback binds because the Werkzeug debugger allows remote code execution).
   - export buttons for `.txt` (one URL per line), `.csv` and `.json`,
   - a "Copy all" button.
 
+## Theme color
+
+The nav bar has a color picker ("Theme") to change the accent color used
+for every orange-ish element: the top bar, the logo, the badge, checkbox
+accents, and link hover colors. Choosing a color previews it live, and the
+choice is kept across sessions (saved in the browser's `localStorage`, per
+browser). "↺ Reset" restores the default Hacker News orange.
+
+Implementation: `static/theme.js` overrides the `--accent` and
+`--accent-dark` CSS variables on `:root` and derives the darker variant
+from the picked color, so no other markup is needed.
+
 ## Tests
 
 Includes a CLI test suite (`tests/test_cli.py`) covering `--public`,
@@ -54,10 +66,11 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-The suite (46 tests) covers the SQLite storage layer, the JSON API, the index
-and `/stored` pages, the export endpoints, and the HN API client + `ago`
-filter. Each test runs against a throwaway SQLite database (`tmp_path`) with
-the Hacker News API mocked, so nothing touches the network or `data/`.
+The suite (60 tests) covers the SQLite storage layer, the JSON API, the index
+and `/stored` pages, the export endpoints, the theme color picker, and the
+HN API client + `ago` filter. Each test runs against a throwaway SQLite
+database (`tmp_path`) with the Hacker News API mocked, so nothing touches
+the network or `data/`.
 
 ## Storage
 

@@ -73,3 +73,12 @@ def test_stored_page_nav_badge_count(client, tmp_db):
     app_module.set_stored("https://a.example", "A", True)
     html = client.get("/stored").get_data(as_text=True)
     assert 'id="stored-count-badge">1</span>' in html
+
+
+def test_theme_color_picker_on_every_page(client, tmp_db):
+    for path in ("/", "/stored"):
+        html = client.get(path).get_data(as_text=True)
+        assert 'type="color" id="theme-color-picker"' in html
+        assert 'id="theme-color-reset"' in html
+        # theme.js must load so the chosen color persists across sessions
+        assert "theme.js" in html

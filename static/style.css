@@ -95,6 +95,45 @@ body {
     vertical-align: middle;
 }
 
+/* ---------- theme color picker ---------- */
+
+.theme-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.85rem;
+    margin-left: 0.5rem;
+}
+
+.theme-picker label { cursor: pointer; }
+
+#theme-color-picker {
+    width: 1.9rem;
+    height: 1.5rem;
+    padding: 0;
+    border: 1px solid #fff;
+    border-radius: 4px;
+    background: none;
+    cursor: pointer;
+}
+
+#theme-color-picker::-webkit-color-swatch-wrapper { padding: 2px; }
+#theme-color-picker::-webkit-color-swatch { border: none; border-radius: 2px; }
+#theme-color-picker::-moz-color-swatch { border: none; border-radius: 2px; }
+
+.theme-reset {
+    padding: 0.15rem 0.5rem;
+    font-size: 0.8rem;
+    background: transparent;
+    border: 1px solid transparent;
+    color: #fff;
+}
+
+.theme-reset:hover {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: transparent;
+}
+
 /* ---------- header / controls ---------- */
 
 .page-header {

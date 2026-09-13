@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}HN Viewer{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='theme.js') }}"></script>
 </head>
 <body>
     <nav class="top-nav">
@@ -15,6 +16,11 @@
                 <a href="{{ url_for('stored') }}" {% if request.endpoint == 'stored' %}class="active"{% endif %}>
                     Stored URLs <span class="badge" id="stored-count-badge">{{ stored_count }}</span>
                 </a>
+                <span class="theme-picker" title="Choose the theme color">
+                    <label for="theme-color-picker">Theme</label>
+                    <input type="color" id="theme-color-picker" value="#ff6600" aria-label="Theme color">
+                    <button type="button" id="theme-color-reset" class="theme-reset" title="Reset theme color">↺ Reset</button>
+                </span>
             </div>
         </div>
     </nav>

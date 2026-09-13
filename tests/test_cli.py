@@ -73,3 +73,60 @@ def test_debug_flags_are_mutually_exclusive(capsys):
 
 def test_primary_lan_ip_returns_valid_address():
     ipaddress.ip_address(_primary_lan_ip())  # raises if not an IP
+
+
+def test_public_with_ip_restricts_allowlist(monkeypatch, capsys):
+    monkeypatch.setattr(app_module, "ALLOWED_CLIENTS", None)  # restore after test
+    kwargs = run_and_capture(monkeypatch, ["--public", "192.168.1.50"])
+    assert kwargs["host"] == "0.0.0.0"
+    assert kwargs["debug"] is False
+    assert app_module.ALLOWED_CLIENTS == frozenset(
+        {ipaddress.ip_address("192.168.1.50")}
+    )
+    out = capsys.readouterr().out
+    assert "restricted to localhost and 192.168.1.50" in out
+
+
+def test_public_with_invalid_ip_is_a_usage_error(capsys):
+    try:
+        main(["--public", "999.1.2.3"])
+    except SystemExit as exc:
+        assert exc.code == 2  # argparse usage error
+        assert "not a valid IP address" in capsys.readouterr().err
+    else:
+        raise AssertionError("expected SystemExit")
+
+
+def test_bare_public_accepts_all_requests(monkeypatch):
+    monkeypatch.setattr(app_module, "ALLOWED_CLIENTS", None)
+    kwargs = run_and_capture(monkeypatch, ["--public"])
+    assert kwargs["host"] == "0.0.0.0"
+    assert app_module.ALLOWED_CLIENTS is None  # no filtering
+
+
+def get(client, path, remote_addr):
+    return client.get(path, environ_base={"REMOTE_ADDR": remote_addr})
+
+
+def test_requests_allowed_without_public_ip(client):
+    assert get(client, "/stored", "203.0.113.7").status_code == 200
+
+
+def test_allowlist_permits_localhost_and_listed_ip(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module, "ALLOWED_CLIENTS", frozenset({ipaddress.ip_address("192.168.1.50")})
+    )
+    assert get(client, "/stored", "127.0.0.1").status_code == 200
+    assert get(client, "/stored", "::1").status_code == 200
+    assert get(client, "/stored", "192.168.1.50").status_code == 200
+
+
+def test_allowlist_rejects_other_addresses(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module, "ALLOWED_CLIENTS", frozenset({ipaddress.ip_address("192.168.1.50")})
+    )
+    resp = get(client, "/stored", "203.0.113.7")
+    assert resp.status_code == 403
+    assert b"192.168.1.50" in resp.data
+    # the API is blocked too
+    assert get(client, "/api/stored", "203.0.113.7").status_code == 403

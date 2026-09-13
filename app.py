@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import ipaddress
 import json
 import socket
 import sqlite3
@@ -33,6 +34,25 @@ STORY_CACHE_TTL = 60          # seconds to keep the fetched story list
 MAX_ITEMS = 100               # hard cap for the "number of items" control
 
 app = Flask(__name__)
+
+# Client allow-list used by --public <IP>: only loopback clients and the
+# given address may connect. None means every request is accepted.
+ALLOWED_CLIENTS: frozenset[ipaddress.IPv4Address | ipaddress.IPv6Address] | None = None
+
+
+@app.before_request
+def restrict_remote_access():
+    """Enforce the --public <IP> allow-list (loopback is always allowed)."""
+    if ALLOWED_CLIENTS is None:
+        return None
+    try:
+        remote = ipaddress.ip_address(request.remote_addr or "")
+    except ValueError:
+        remote = None
+    if remote is not None and (remote.is_loopback or remote in ALLOWED_CLIENTS):
+        return None
+    allowed = ", ".join(str(ip) for ip in sorted(ALLOWED_CLIENTS))
+    return jsonify(error=f"forbidden: only localhost and {allowed} may connect"), 403
 
 
 # ---------------------------------------------------------------------------
@@ -314,9 +334,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="port to listen on (default: 5000)",
     )
     parser.add_argument(
-        "--public", action="store_true",
+        "--public", nargs="?", const="", default=None, metavar="IP",
         help="bind to 0.0.0.0 so other devices can open the app via this "
-             "machine's IP address (same as --host 0.0.0.0)",
+             "machine's IP address (same as --host 0.0.0.0). Optionally give "
+             "an IP address to only accept requests from localhost and that "
+             "address; without a value all requests are accepted",
     )
     debug_group = parser.add_mutually_exclusive_group()
     debug_group.add_argument(
@@ -331,9 +353,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = _build_parser().parse_args(argv)
-    host = "0.0.0.0" if args.public else (args.host or "127.0.0.1")
+    global ALLOWED_CLIENTS
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    host = "0.0.0.0" if args.public is not None else (args.host or "127.0.0.1")
     loopback = host in ("127.0.0.1", "localhost")
+
+    ALLOWED_CLIENTS = None
+    if args.public:
+        try:
+            allowed_ip = ipaddress.ip_address(args.public)
+        except ValueError:
+            parser.error(f"--public: {args.public!r} is not a valid IP address")
+        ALLOWED_CLIENTS = frozenset({allowed_ip})
 
     # The interactive debugger allows arbitrary code execution from the
     # browser, so never enable it by default on a non-loopback interface.
@@ -346,6 +378,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"* Network: http://{lan_ip}:{args.port}   <- open this on other devices")
     elif not loopback:
         print(f"* Network: http://{host}:{args.port}   <- open this on other devices")
+    if ALLOWED_CLIENTS is not None:
+        allowed = ", ".join(str(ip) for ip in sorted(ALLOWED_CLIENTS))
+        print(f"* Access:   restricted to localhost and {allowed}")
     if not debug:
         print("* Debugger/auto-reload disabled (enable explicitly with --debug)")
 

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}HN Viewer{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <nav class="top-nav">
+        <div class="container nav-inner">
+            <a class="brand" href="{{ url_for('index') }}"><span class="logo">Y</span> HN Viewer</a>
+            <div class="nav-links">
+                <a href="{{ url_for('index') }}" {% if request.endpoint == 'index' %}class="active"{% endif %}>Top Stories</a>
+                <a href="{{ url_for('stored') }}" {% if request.endpoint == 'stored' %}class="active"{% endif %}>
+                    Stored URLs <span class="badge" id="stored-count-badge">{{ stored_count }}</span>
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

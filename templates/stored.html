@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Stored URLs — HN Viewer{% endblock %}
+
+{% block content %}
+<header class="page-header">
+    <h1>Stored URLs <span class="badge">{{ rows|length }}</span></h1>
+    <div class="controls">
+        <a class="btn" href="{{ url_for('export_txt') }}">Export .txt</a>
+        <a class="btn" href="{{ url_for('export_csv') }}">Export .csv</a>
+        <a class="btn" href="{{ url_for('export_json') }}">Export .json</a>
+        <button class="btn" id="copy-all">Copy all</button>
+        <button class="btn danger" id="clear-all">Clear all</button>
+    </div>
+</header>
+
+{% if rows %}
+<table class="stored-table">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Title</th>
+            <th>URL</th>
+            <th>Added</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr data-url="{{ row.url }}">
+            <td class="cell-num">{{ loop.index }}</td>
+            <td class="cell-title">
+                <a href="{{ row.url }}" target="_blank" rel="noopener">{{ row.title or row.url }}</a>
+            </td>
+            <td class="cell-url">{{ row.url }}</td>
+            <td class="cell-added">{{ row.added_at|ago }}</td>
+            <td>
+                <button class="btn small remove-btn" data-url="{{ row.url }}">Remove</button>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty">Nothing stored yet. Go to <a href="{{ url_for('index') }}">Top Stories</a>
+    and check the box next to some stories.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const allUrls = () => Array.from(document.querySelectorAll('tr[data-url]'))
+    .map(tr => tr.dataset.url);
+
+document.querySelectorAll('.remove-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+            const res = await fetch('{{ url_for("api_store") }}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: btn.dataset.url, checked: false })
+            });
+            if (!res.ok) throw new Error('remove failed');
+            const data = await res.json();
+            const badge = document.querySelector('.page-header .badge');
+            if (badge) badge.textContent = data.count;
+            const navBadge = document.getElementById('stored-count-badge');
+            if (navBadge) navBadge.textContent = data.count;
+            const tr = btn.closest('tr');
+            if (tr) tr.remove();
+            if (data.count === 0) location.reload();
+        } catch (err) {
+            btn.disabled = false;
+            alert('Failed to remove the URL.');
+        }
+    });
+});
+
+document.getElementById('clear-all')?.addEventListener('click', async () => {
+    if (!confirm('Remove ALL stored URLs?')) return;
+    try {
+        const res = await fetch('{{ url_for("api_clear") }}', { method: 'POST' });
+        if (!res.ok) throw new Error('clear failed');
+        location.reload();
+    } catch (err) {
+        alert('Failed to clear stored URLs.');
+    }
+});
+
+document.getElementById('copy-all')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const text = allUrls().join('\n');
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (err) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+    }
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+});
+</script>
+{% endblock %}

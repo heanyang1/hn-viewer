@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Top Stories — HN Viewer{% endblock %}
+
+{% block content %}
+<header class="page-header">
+    <h1>Hacker News — Top Stories</h1>
+    <form method="get" action="{{ url_for('index') }}" class="controls">
+        <label for="num-items">Items:</label>
+        <input type="number" id="num-items" name="num" min="1" max="100" value="{{ num }}">
+        <button type="submit">Load</button>
+        <span id="save-status" class="save-status" aria-live="polite"></span>
+    </form>
+</header>
+
+{% if error %}
+<p class="alert">Could not reach the Hacker News API ({{ error }}). Please try again later.</p>
+{% endif %}
+
+<p class="hint">Check the box next to a story to store its URL. Stored URLs are kept on the server
+    and can be viewed and exported on the <a href="{{ url_for('stored') }}">Stored URLs</a> page.</p>
+
+<ul class="story-list" id="stories-list">
+    {% for story in stories %}
+    <li class="story-item">
+        <label class="check-wrap" title="Store this URL">
+            <input type="checkbox" class="story-checkbox"
+                   data-url="{{ story.url }}" data-title="{{ story.title }}"
+                   {% if story.url in stored %}checked{% endif %}>
+        </label>
+        <div class="story-main">
+            <a class="story-link" href="{{ story.url }}" target="_blank" rel="noopener">{{ story.title }}</a>
+            {% if story.domain %}<span class="story-domain">({{ story.domain }})</span>{% endif %}
+            <div class="story-meta">{{ story.score }} points by {{ story.by }} · {{ story.time|ago }}</div>
+        </div>
+        <button class="comments-btn" data-story-id="{{ story.id }}">
+            {% if story.descendants %}Comments ({{ story.descendants }}){% else %}Comments{% endif %}
+        </button>
+        <div class="comments-section" hidden></div>
+    </li>
+    {% else %}
+    <li class="empty">No stories to show.</li>
+    {% endfor %}
+</ul>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STORIES = {{ stories|tojson }};
+
+/* ---------- checkbox <-> server-side storage ---------- */
+
+const statusEl = document.getElementById('save-status');
+let statusTimer = null;
+
+function setStatus(text, isError = false) {
+    if (!statusEl) return;
+    statusEl.textContent = text;
+    statusEl.classList.toggle('error', isError);
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => { statusEl.textContent = ''; }, 2500);
+}
+
+function updateBadge(count) {
+    const badge = document.getElementById('stored-count-badge');
+    if (badge) badge.textContent = count;
+}
+
+document.querySelectorAll('.story-checkbox').forEach(cb => {
+    cb.addEventListener('change', async () => {
+        const desired = cb.checked;
+        setStatus('Saving…');
+        try {
+            const res = await fetch('{{ url_for("api_store") }}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: cb.dataset.url,
+                    title: cb.dataset.title,
+                    checked: desired
+                })
+            });
+            if (!res.ok) throw new Error('save failed');
+            const data = await res.json();
+            setStatus(desired ? 'Added ✓' : 'Removed ✓');
+            updateBadge(data.count);
+        } catch (err) {
+            cb.checked = !desired; // revert on failure
+            setStatus('Save failed', true);
+        }
+    });
+});
+
+/* ---------- comments (lazy-loaded from the HN API) ---------- */
+
+function timeAgo(unixTime) {
+    const seconds = Math.floor((Date.now() - unixTime * 1000) / 1000);
+    if (seconds < 60) return seconds + 's ago';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    return days + 'd ago';
+}
+
+async function fetchItem(id) {
+    const res = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
+    if (!res.ok) throw new Error('Failed');
+    return res.json();
+}
+
+function displayComments(kids, container) {
+    if (!kids || kids.length === 0) {
+        container.textContent = 'No comments yet.';
+        return;
+    }
+    container.innerHTML = '';
+    const ul = document.createElement('ul');
+    ul.className = 'comments-tree';
+    container.appendChild(ul);
+    for (const id of kids) {
+        const li = document.createElement('li');
+        li.className = 'comment-item';
+        li.textContent = 'Loading…';
+        ul.appendChild(li);
+        fetchItem(id)
+            .then(comment => renderComment(comment, li))
+            .catch(() => { li.textContent = 'Failed to load comment'; });
+    }
+}
+
+function renderComment(comment, li) {
+    if (!comment || comment.deleted || comment.dead) {
+        li.textContent = '[deleted]';
+        return;
+    }
+    li.innerHTML = '';
+    const meta = document.createElement('div');
+    meta.className = 'comment-meta';
+    meta.textContent = (comment.by || '') + ' ' + timeAgo(comment.time || 0);
+    li.appendChild(meta);
+    const text = document.createElement('div');
+    text.className = 'comment-text';
+    text.innerHTML = comment.text || '';
+    li.appendChild(text);
+    const kids = comment.kids;
+    if (kids && kids.length > 0) {
+        const repliesBtn = document.createElement('button');
+        repliesBtn.className = 'replies-btn';
+        repliesBtn.textContent = `Replies (${kids.length})`;
+        li.appendChild(repliesBtn);
+        repliesBtn.addEventListener('click', () => {
+            const existing = li.querySelector('.replies');
+            if (existing) {
+                existing.remove();
+                repliesBtn.textContent = `Replies (${kids.length})`;
+                return;
+            }
+            const replies = document.createElement('div');
+            replies.className = 'replies';
+            li.appendChild(replies);
+            displayComments(kids, replies);
+            repliesBtn.textContent = 'Hide replies';
+        });
+    }
+}
+
+document.querySelectorAll('.comments-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const li = btn.closest('.story-item');
+        const section = li.querySelector('.comments-section');
+        if (!section.hidden) {
+            section.hidden = true;
+            section.innerHTML = '';
+            return;
+        }
+        section.hidden = false;
+        section.textContent = 'Loading comments…';
+        const story = STORIES.find(s => s.id === Number(btn.dataset.storyId));
+        if (story) displayComments(story.kids, section);
+        else section.textContent = 'No comments yet.';
+    });
+});
+</script>
+{% endblock %}

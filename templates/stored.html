@@ -8,12 +8,16 @@
         <a class="btn" href="{{ url_for('export_txt') }}">Export .txt</a>
         <a class="btn" href="{{ url_for('export_csv') }}">Export .csv</a>
         <a class="btn" href="{{ url_for('export_json') }}">Export .json</a>
+        <a class="btn" href="{{ url_for('export_texts') }}">Export texts (.zip)</a>
         <button class="btn" id="copy-all">Copy all</button>
         <button class="btn danger" id="clear-all">Clear all</button>
     </div>
 </header>
 
 {% if rows %}
+{% set status_labels = {"pending": "queued…", "scraping": "scraping…",
+                        "ready": "text ready", "failed": "failed",
+                        "missing": "—"} %}
 <table class="stored-table">
     <thead>
         <tr>
@@ -21,21 +25,36 @@
             <th>Title</th>
             <th>URL</th>
             <th>Added</th>
+            <th>Text</th>
             <th></th>
         </tr>
     </thead>
     <tbody>
         {% for row in rows %}
-        <tr data-url="{{ row.url }}">
+        <tr data-url="{{ row.url }}" data-id="{{ row.id }}"
+            data-status="{{ row.text_status }}">
             <td class="cell-num">{{ loop.index }}</td>
             <td class="cell-title">
                 <a href="{{ row.url }}" target="_blank" rel="noopener">{{ row.title or row.url }}</a>
             </td>
             <td class="cell-url">{{ row.url }}</td>
             <td class="cell-added">{{ row.added_at|ago }}</td>
-            <td>
+            <td class="cell-text">
+                <span class="text-status status-{{ row.text_status }}">{{ status_labels[row.text_status] }}</span>
+            </td>
+            <td class="cell-actions">
+                <button class="btn small text-btn">Scraped text</button>
+                {% if row.text_status == 'ready' %}
+                <a class="btn small download-btn" href="{{ url_for('download_text', row_id=row.id) }}">Download .txt</a>
+                {% else %}
+                <button class="btn small download-btn" disabled
+                        title="Available once the text has been scraped">Download .txt</button>
+                {% endif %}
                 <button class="btn small remove-btn" data-url="{{ row.url }}">Remove</button>
             </td>
+        </tr>
+        <tr class="text-row" hidden>
+            <td colspan="6"><div class="text-box"></div></td>
         </tr>
         {% endfor %}
     </tbody>
@@ -48,8 +67,124 @@
 
 {% block scripts %}
 <script>
-const allUrls = () => Array.from(document.querySelectorAll('tr[data-url]'))
+const allUrls = () => Array.from(document.querySelectorAll('tr[data-url]:not(.text-row)'))
     .map(tr => tr.dataset.url);
+
+/* ---------- expandable scraped text (like the comments loader) ---------- */
+
+const STATUS_LABELS = {
+    pending: 'queued…', scraping: 'scraping…',
+    ready: 'text ready', failed: 'failed', missing: '—'
+};
+const pollTimers = new Map();   // row id -> interval handle
+
+function stopPolling(id) {
+    const timer = pollTimers.get(id);
+    if (timer) { clearInterval(timer); pollTimers.delete(id); }
+}
+
+function setStatusBadge(tr, status) {
+    tr.dataset.status = status;
+    const el = tr.querySelector('.text-status');
+    if (el) {
+        el.textContent = STATUS_LABELS[status] || status;
+        el.className = 'text-status status-' + status;
+    }
+}
+
+function enableDownload(tr) {
+    const btn = tr.querySelector('.download-btn');
+    if (!btn || btn.tagName === 'A') return;
+    const link = document.createElement('a');
+    link.className = 'btn small download-btn';
+    link.href = `/stored/${tr.dataset.id}/download.txt`;
+    link.textContent = 'Download .txt';
+    btn.replaceWith(link);
+}
+
+async function loadText(tr, box) {
+    const id = tr.dataset.id;
+    let data;
+    try {
+        const res = await fetch(`/api/text/${id}`);
+        if (!res.ok) throw new Error('load failed');
+        data = await res.json();
+    } catch (err) {
+        stopPolling(id);
+        box.textContent = 'Failed to load the scraped text.';
+        return;
+    }
+
+    if (data.status === 'ready') {
+        stopPolling(id);
+        box.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.className = 'article-text';
+        pre.textContent = data.text || '(no text)';
+        box.appendChild(pre);
+        setStatusBadge(tr, 'ready');
+        enableDownload(tr);
+    } else if (data.status === 'failed') {
+        stopPolling(id);
+        box.innerHTML = '';
+        const err = document.createElement('p');
+        err.className = 'alert scrape-error';
+        err.textContent = 'Scraping failed: ' + (data.error || 'unknown error');
+        const retry = document.createElement('button');
+        retry.className = 'btn small';
+        retry.textContent = 'Retry scraping';
+        retry.addEventListener('click', () => retryScrape(tr, box));
+        box.appendChild(err);
+        box.appendChild(retry);
+        setStatusBadge(tr, 'failed');
+    } else {
+        setStatusBadge(tr, data.status);
+        box.textContent = data.status === 'scraping'
+            ? 'Scraping the article…' : 'Queued for scraping…';
+    }
+}
+
+function startPolling(tr, box) {
+    const id = tr.dataset.id;
+    stopPolling(id);
+    pollTimers.set(id, setInterval(() => loadText(tr, box), 2000));
+}
+
+async function retryScrape(tr, box) {
+    try {
+        await fetch('{{ url_for("api_scrape") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: tr.dataset.url })
+        });
+    } catch (err) { /* polling below reflects the real status */ }
+    setStatusBadge(tr, 'pending');
+    box.textContent = 'Queued for scraping…';
+    startPolling(tr, box);
+}
+
+document.querySelectorAll('.text-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const tr = btn.closest('tr');
+        const section = tr.nextElementSibling;
+        const box = section.querySelector('.text-box');
+        if (!section.hidden) {          // collapse
+            section.hidden = true;
+            stopPolling(tr.dataset.id);
+            btn.textContent = 'Scraped text';
+            return;
+        }
+        section.hidden = false;         // expand
+        btn.textContent = 'Hide text';
+        box.textContent = 'Loading…';
+        loadText(tr, box).then(() => {
+            const status = tr.dataset.status;
+            if (status === 'pending' || status === 'scraping') startPolling(tr, box);
+        });
+    });
+});
+
+/* ---------- remove / clear / copy ---------- */
 
 document.querySelectorAll('.remove-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -67,7 +202,12 @@ document.querySelectorAll('.remove-btn').forEach(btn => {
             const navBadge = document.getElementById('stored-count-badge');
             if (navBadge) navBadge.textContent = data.count;
             const tr = btn.closest('tr');
-            if (tr) tr.remove();
+            if (tr) {
+                stopPolling(tr.dataset.id);
+                const open = tr.nextElementSibling;
+                if (open && open.classList.contains('text-row')) open.remove();
+                tr.remove();
+            }
             if (data.count === 0) location.reload();
         } catch (err) {
             btn.disabled = false;

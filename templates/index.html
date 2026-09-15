@@ -16,8 +16,9 @@
 <p class="alert">Could not reach the Hacker News API ({{ error }}). Please try again later.</p>
 {% endif %}
 
-<p class="hint">Check the box next to a story to store its URL. Stored URLs are kept on the server
-    and can be viewed and exported on the <a href="{{ url_for('stored') }}">Stored URLs</a> page.</p>
+<p class="hint">Check the box next to a story to store its URL — the article text is then scraped
+    in the background and can be viewed and downloaded on the
+    <a href="{{ url_for('stored') }}">Stored URLs</a> page.</p>
 
 <ul class="story-list" id="stories-list">
     {% for story in stories %}

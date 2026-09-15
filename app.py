@@ -3,6 +3,11 @@
 A Flask web app that lists Hacker News top stories, and checking/unchecking
 the box next to a story adds/removes its URL in persistent storage (SQLite).
 A separate page (/stored) lets the user view and export all stored URLs.
+
+Checking a story also scrapes the article text in the background (via
+scrape_webpage.py). On the /stored page the scraped text can be expanded
+inline, downloaded per article as .txt, or exported together as a .zip
+archive.
 """
 from __future__ import annotations
 
@@ -11,10 +16,12 @@ import csv
 import io
 import ipaddress
 import json
+import re
 import socket
 import sqlite3
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +29,7 @@ from urllib.parse import urlparse
 
 import requests
 from flask import (Flask, Response, jsonify, render_template, request,
-                   url_for)
+                   send_file, url_for)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -78,6 +85,18 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS article_texts (
+                url        TEXT PRIMARY KEY,
+                title      TEXT NOT NULL DEFAULT '',
+                text       TEXT,
+                status     TEXT NOT NULL DEFAULT 'pending',
+                error      TEXT,
+                scraped_at TEXT
+            )
+            """
+        )
 
 
 def list_stored() -> list[sqlite3.Row]:
@@ -90,6 +109,13 @@ def list_stored() -> list[sqlite3.Row]:
 def stored_url_set() -> set[str]:
     with get_db() as conn:
         return {row["url"] for row in conn.execute("SELECT url FROM stored_urls")}
+
+
+def stored_row(url: str) -> sqlite3.Row | None:
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT id, url, title, added_at FROM stored_urls WHERE url = ?", (url,)
+        ).fetchone()
 
 
 def stored_count() -> int:
@@ -108,11 +134,160 @@ def set_stored(url: str, title: str, checked: bool) -> None:
             )
         else:
             conn.execute("DELETE FROM stored_urls WHERE url = ?", (url,))
+            conn.execute("DELETE FROM article_texts WHERE url = ?", (url,))
 
 
 def clear_stored() -> None:
     with get_db() as conn:
         conn.execute("DELETE FROM stored_urls")
+        conn.execute("DELETE FROM article_texts")
+
+
+# ---------------------------------------------------------------------------
+# Article text storage & background scraping
+# ---------------------------------------------------------------------------
+
+_scrape_lock = threading.Lock()
+_active_scrapes: set[str] = set()   # URLs with a scrape thread running right now
+
+
+def get_article(url: str) -> sqlite3.Row | None:
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT url, title, text, status, error, scraped_at "
+            "FROM article_texts WHERE url = ?",
+            (url,),
+        ).fetchone()
+
+
+def article_status_map() -> dict[str, sqlite3.Row]:
+    """Map every article_texts row by URL (small table, fetched in full)."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT url, title, status, error FROM article_texts"
+        ).fetchall()
+    return {row["url"]: row for row in rows}
+
+
+def ensure_article(url: str, title: str = "") -> None:
+    """Create the article_texts row for `url` if it does not exist yet."""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO article_texts (url, title, status) VALUES (?, ?, 'pending') "
+            "ON CONFLICT(url) DO NOTHING",
+            (url, title),
+        )
+
+
+def set_article_status(url: str, status: str, error: str | None = None) -> None:
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE article_texts SET status = ?, error = ? WHERE url = ?",
+            (status, error, url),
+        )
+
+
+def save_article_text(url: str, title: str, text: str) -> None:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE article_texts SET title = ?, text = ?, status = 'ready', "
+            "error = NULL, scraped_at = ? WHERE url = ?",
+            (title, text, now, url),
+        )
+
+
+def article_for_stored_id(row_id: int) -> sqlite3.Row | None:
+    """Article-text row joined with its stored_urls entry, by stored row id."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT a.status, a.title, a.error, a.text, a.scraped_at, "
+            "       s.title AS story_title "
+            "FROM article_texts a JOIN stored_urls s ON s.url = a.url "
+            "WHERE s.id = ?",
+            (row_id,),
+        ).fetchone()
+
+
+def list_scraped_articles() -> list[sqlite3.Row]:
+    """Successfully scraped texts joined with their stored_urls row."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT s.id, s.title AS story_title, a.title, a.text "
+            "FROM article_texts a JOIN stored_urls s ON s.url = a.url "
+            "WHERE a.status = 'ready' AND TRIM(COALESCE(a.text, '')) != '' "
+            "ORDER BY s.id"
+        ).fetchall()
+
+
+def scrape_active(url: str) -> bool:
+    with _scrape_lock:
+        return url in _active_scrapes
+
+
+def _safe_filename(title: str, default: str) -> str:
+    """Sanitize a title for use in a filename (same rules as scrape_webpage)."""
+    name = re.sub(r"[^\w.-]", "_", (title or "").strip())
+    return name.strip("._")[:100] or default
+
+
+def _do_scrape(url: str) -> tuple[str | None, str | None]:
+    """Run scrape_webpage.scrape_webpage; imported lazily so the app still
+    starts when the scraping dependencies are not installed."""
+    from scrape_webpage import scrape_webpage
+    return scrape_webpage(url)
+
+
+def run_scrape(url: str) -> None:
+    """Scrape `url` synchronously and record the result (status/text/error)."""
+    set_article_status(url, "scraping")
+    try:
+        text, scraped_title = _do_scrape(url)
+    except Exception as exc:
+        set_article_status(url, "failed", error=f"{type(exc).__name__}: {exc}")
+        return
+    if not text or not text.strip():
+        set_article_status(url, "failed", error="no text scraped")
+        return
+    save_article_text(url, (scraped_title or "").strip(), text)
+
+
+def _scrape_task(url: str) -> None:
+    try:
+        run_scrape(url)
+    except Exception as exc:  # defensive: the thread must never die loudly
+        set_article_status(url, "failed", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        with _scrape_lock:
+            _active_scrapes.discard(url)
+
+
+def enqueue_scrape(url: str, title: str = "") -> bool:
+    """Start a background scrape for `url`; False if one is already running."""
+    with _scrape_lock:
+        if url in _active_scrapes:
+            return False
+        _active_scrapes.add(url)
+    ensure_article(url, title)
+    set_article_status(url, "pending", error=None)
+    threading.Thread(
+        target=_scrape_task, args=(url,), daemon=True, name=f"scrape:{url[:60]}"
+    ).start()
+    return True
+
+
+def queue_scrape_if_needed(url: str, title: str = "",
+                           retry_failed: bool = False) -> bool:
+    """Queue a scrape unless the text is already there / being scraped."""
+    art = get_article(url)
+    if art is None:
+        return enqueue_scrape(url, title)
+    if art["status"] == "failed" and retry_failed:
+        return enqueue_scrape(url, title)
+    if art["status"] in ("pending", "scraping") and not scrape_active(url):
+        # Stale row left over from an app restart — try again.
+        return enqueue_scrape(url, title)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +400,23 @@ def index():
 
 @app.get("/stored")
 def stored():
-    return render_template("stored.html", rows=list_stored())
+    rows = list_stored()
+    for row in rows:
+        # Pick up URLs stored before this feature existed and rows left in a
+        # transient state by an app restart.
+        queue_scrape_if_needed(row["url"], row["title"])
+    statuses = article_status_map()
+    view_rows = [
+        {
+            "id": row["id"],
+            "url": row["url"],
+            "title": row["title"],
+            "added_at": row["added_at"],
+            "text_status": statuses.get(row["url"], {"status": "missing"})["status"],
+        }
+        for row in rows
+    ]
+    return render_template("stored.html", rows=view_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +432,9 @@ def api_store():
     if not url:
         return jsonify(error="url is required"), 400
     set_stored(url, title, checked)
+    if checked:
+        # Scrape the article text in the background (best effort).
+        queue_scrape_if_needed(url, title, retry_failed=True)
     return jsonify(ok=True, checked=checked, count=stored_count())
 
 
@@ -253,6 +447,59 @@ def api_stored():
 def api_clear():
     clear_stored()
     return jsonify(ok=True, count=0)
+
+
+@app.post("/api/scrape")
+def api_scrape():
+    """(Re)queue background scraping for a stored URL."""
+    data = request.get_json(silent=True) or request.form
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify(error="url is required"), 400
+    row = stored_row(url)
+    if row is None:
+        return jsonify(error="url is not stored"), 404
+    queued = queue_scrape_if_needed(url, row["title"], retry_failed=True)
+    if queued:
+        status = "pending"   # just (re)queued by this request
+    else:
+        article = get_article(url)
+        status = article["status"] if article else "pending"
+    return jsonify(ok=True, queued=queued, status=status)
+
+
+@app.get("/api/text/<int:row_id>")
+def api_text(row_id: int):
+    """Scraping status and (when ready) the scraped text for a stored row."""
+    article = article_for_stored_id(row_id)
+    if article is None:
+        return jsonify(error="no such stored article"), 404
+    payload = {
+        "status": article["status"],
+        "title": article["title"] or article["story_title"] or "",
+        "error": article["error"],
+        "scraped_at": article["scraped_at"],
+    }
+    if article["status"] == "ready":
+        payload["text"] = article["text"]
+    return jsonify(payload)
+
+
+@app.get("/stored/<int:row_id>/download.txt")
+def download_text(row_id: int):
+    """Download the scraped text of one article as a .txt attachment."""
+    article = article_for_stored_id(row_id)
+    if article is None or article["status"] != "ready" \
+            or not (article["text"] or "").strip():
+        return jsonify(error="scraped text is not available"), 404
+    name = _safe_filename(article["title"] or article["story_title"],
+                          f"article_{row_id}")
+    return send_file(
+        io.BytesIO(article["text"].encode("utf-8")),
+        mimetype="text/plain",
+        as_attachment=True,
+        download_name=f"{name}_{row_id}.txt",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +543,25 @@ def export_json():
         body,
         mimetype="application/json",
         headers={"Content-Disposition": "attachment; filename=hn-stored-urls.json"},
+    )
+
+
+@app.get("/export/texts")
+def export_texts():
+    """Export every successfully scraped article text as a .zip archive."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        for article in list_scraped_articles():
+            row_id = article["id"]
+            name = _safe_filename(article["title"] or article["story_title"],
+                                  f"article_{row_id}")
+            archive.writestr(f"{name}_{row_id}.txt", article["text"])
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="hn-scraped-texts.zip",
     )
 
 

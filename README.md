@@ -5,6 +5,8 @@
 A Flask web app that uses [Hacker News API](https://hacker-news.firebaseio.com/v0/topstories.json)
 to list Hacker News top stories. Checking/unchecking the box next to a story adds/removes
 its URL in persistent storage (SQLite). A separate page lets you view and export all stored URLs.
+Checking a story also scrapes the article text in the background (via `scrape_webpage.py`),
+so it can later be read inline or downloaded as a `.txt` file.
 
 ## Run
 
@@ -35,14 +37,25 @@ non-loopback binds because the Werkzeug debugger allows remote code execution).
 ## Pages
 
 - `/` — Top stories with a checkbox per story.
-  - Check a box → the story URL (and title) is stored in SQLite.
-  - Uncheck a box → the URL is removed from storage.
+  - Check a box → the story URL (and title) is stored in SQLite and its page
+    text is scraped in the background.
+  - Uncheck a box → the URL and its scraped text are removed from storage.
   - "Comments" button lazy-loads the comment tree from the HN API.
   - "Items" control loads 1–100 stories.
 - `/stored` — All stored URLs with:
-  - per-row Remove button and a Clear-all button,
+  - a per-row text status (`queued…`, `scraping…`, `text ready`, `failed`),
+  - a "Scraped text" button that expands the scraped text inline
+    (with a "Retry scraping" button when scraping failed),
+  - a per-row "Download .txt" button for the scraped text
+    (enabled once scraping succeeded),
+  - per-row Remove button and a Clear-all button (both also drop scraped text),
   - export buttons for `.txt` (one URL per line), `.csv` and `.json`,
+  - an "Export texts (.zip)" button that archives every successfully scraped
+    article text as `{title}_{id}.txt`,
   - a "Copy all" button.
+
+URLs that were stored before the scraping feature existed are scraped
+automatically the next time the `/stored` page is opened.
 
 ## Theme color
 

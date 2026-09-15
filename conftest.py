@@ -77,6 +77,21 @@ def reset_story_cache():
     app_module._story_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def mock_scrape_queue(monkeypatch):
+    """Stub out background scraping so tests never spawn scrape threads.
+
+    Tests that care about scraping can request this fixture to inspect the
+    enqueued URLs, and can drive the pipeline themselves by monkeypatching
+    app_module._do_scrape and calling app_module.run_scrape(url) directly.
+    """
+    queued: list[str] = []
+    monkeypatch.setattr(
+        app_module, "enqueue_scrape", lambda url, title="": queued.append(url) or True
+    )
+    yield queued
+
+
 @pytest.fixture()
 def tmp_db(tmp_path, monkeypatch):
     """Point storage at a fresh SQLite DB inside a temp directory."""

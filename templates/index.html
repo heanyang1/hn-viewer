@@ -143,6 +143,10 @@ function renderComment(comment, li) {
     const text = document.createElement('div');
     text.className = 'comment-text';
     text.innerHTML = comment.text || '';
+    text.querySelectorAll('a[href]').forEach(a => {
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+    });
     li.appendChild(text);
     const kids = comment.kids;
     if (kids && kids.length > 0) {

@@ -49,6 +49,20 @@ def test_index_shows_error_when_api_down(client, mock_hn_down):
     assert 'class="story-checkbox"' not in html
 
 
+def test_index_no_news_skips_api_but_exports_work(client, mock_hn, monkeypatch):
+    monkeypatch.setattr(app_module, "NO_NEWS", True)
+    res = client.get("/?num=3")
+    html = res.get_data(as_text=True)
+    assert res.status_code == 200
+    assert mock_hn["top"] == 0 and mock_hn["items"] == []  # API never called
+    assert "News fetching is disabled" in html
+    assert 'class="story-checkbox"' not in html
+    # Other functions are not affected.
+    assert client.get("/stored").status_code == 200
+    assert client.get("/export/txt").status_code == 200
+    assert client.get("/export/texts").status_code == 200
+
+
 def test_stored_page_empty_state(client, tmp_db):
     res = client.get("/stored")
     html = res.get_data(as_text=True)

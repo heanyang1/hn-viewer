@@ -30,9 +30,14 @@ The app prints the URL to use on other devices (its LAN IP). If it doesn't
 show, find the IP with `ip addr` / `ipconfig` and open `http://<ip>:5000`.
 Make sure your firewall allows inbound connections on the chosen port.
 
-Options: `--host HOST`, `--port PORT`, `--public`, and `--debug` / `--no-debug`
+Options: `--host HOST`, `--port PORT`, `--public`, `--no-news`, and
+`--debug` / `--no-debug`
 (debugger + auto-reload; on by default for loopback, auto-disabled for
 non-loopback binds because the Werkzeug debugger allows remote code execution).
+
+With `--no-news` the app never calls the Hacker News API: the front page
+renders empty (with a notice) while storage, scraping and all exports keep
+working — useful for offline use as a pure URL store.
 
 ## Pages
 

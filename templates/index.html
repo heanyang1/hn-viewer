@@ -12,7 +12,10 @@
     </form>
 </header>
 
-{% if error %}
+{% if no_news %}
+<p class="alert">News fetching is disabled (server started with <code>--no-news</code>).
+    Stored URLs and exports still work.</p>
+{% elif error %}
 <p class="alert">Could not reach the Hacker News API ({{ error }}). Please try again later.</p>
 {% endif %}
 

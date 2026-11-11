@@ -104,6 +104,19 @@ def test_bare_public_accepts_all_requests(monkeypatch):
     assert app_module.ALLOWED_CLIENTS is None  # no filtering
 
 
+def test_no_news_flag_enables_no_news_mode(monkeypatch, capsys):
+    monkeypatch.setattr(app_module, "NO_NEWS", False)  # restore after test
+    run_and_capture(monkeypatch, ["--no-news"])
+    assert app_module.NO_NEWS is True
+    assert "fetching disabled" in capsys.readouterr().out
+
+
+def test_no_news_defaults_to_off(monkeypatch):
+    monkeypatch.setattr(app_module, "NO_NEWS", True)  # restore after test
+    run_and_capture(monkeypatch, [])
+    assert app_module.NO_NEWS is False
+
+
 def get(client, path, remote_addr):
     return client.get(path, environ_base={"REMOTE_ADDR": remote_addr})
 

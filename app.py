@@ -46,6 +46,10 @@ app = Flask(__name__)
 # given address may connect. None means every request is accepted.
 ALLOWED_CLIENTS: frozenset[ipaddress.IPv4Address | ipaddress.IPv6Address] | None = None
 
+# Set by --no-news: the index page then skips fetching stories from the HN
+# API entirely, while storage, scraping and exports keep working.
+NO_NEWS = False
+
 
 @app.before_request
 def restrict_remote_access():
@@ -388,13 +392,18 @@ def inject_stored_count():
 def index():
     num = request.args.get("num", 30, type=int) or 30
     num = max(1, min(num, MAX_ITEMS))
-    stories, error = get_top_stories(num)
+    if NO_NEWS:
+        # --no-news: render the page shell without calling the HN API.
+        stories, error = [], None
+    else:
+        stories, error = get_top_stories(num)
     return render_template(
         "index.html",
         stories=stories,
         stored=stored_url_set(),
         num=num,
         error=error,
+        no_news=NO_NEWS,
     )
 
 
@@ -606,6 +615,11 @@ def _build_parser() -> argparse.ArgumentParser:
              "an IP address to only accept requests from localhost and that "
              "address; without a value all requests are accepted",
     )
+    parser.add_argument(
+        "--no-news", action="store_true",
+        help="do not fetch stories from the Hacker News API; the front page "
+             "renders empty while storage, scraping and exports keep working",
+    )
     debug_group = parser.add_mutually_exclusive_group()
     debug_group.add_argument(
         "--debug", dest="debug", action="store_true", default=None,
@@ -619,7 +633,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    global ALLOWED_CLIENTS
+    global ALLOWED_CLIENTS, NO_NEWS
     parser = _build_parser()
     args = parser.parse_args(argv)
     host = "0.0.0.0" if args.public is not None else (args.host or "127.0.0.1")
@@ -647,6 +661,9 @@ def main(argv: list[str] | None = None) -> None:
     if ALLOWED_CLIENTS is not None:
         allowed = ", ".join(str(ip) for ip in sorted(ALLOWED_CLIENTS))
         print(f"* Access:   restricted to localhost and {allowed}")
+    NO_NEWS = bool(args.no_news)
+    if NO_NEWS:
+        print("* News:    fetching disabled (--no-news)")
     if not debug:
         print("* Debugger/auto-reload disabled (enable explicitly with --debug)")
 
